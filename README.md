@@ -3,16 +3,18 @@
 
 Here is a look at the application's graphical user interface:
 
-![GUI Screenshot](static\ZonalOCR-Example.PNG)
+![GUI Screenshot](static/ZonalOCR-Example.PNG)
 
 
 ## Description
 
 This project is a Zonal Optical Character Recognition (OCR) application developed using Python's Tkinter library. It is designed to extract text from specific zones or areas within a document or image, offering a user-friendly interface to define these zones and retrieve text efficiently.
 
+**This is no where close to complete yet. There will be many updates to come. The goal is to create an easy way for users to create document extraction ML models for their own use.**
+
 ## Features
 
-- **User-Friendly Interface:** Built with Tkinter, the application provides an intuitive graphical user interface.
+- **User-Friendly Interface:** Built with Tkinter.
 - **Zone Selection:** Users can select specific areas in a document for text extraction.
 - **OCR Functionality:** Utilizes advanced OCR technology to accurately extract text from the selected zones.
 - **Document Support:** Compatible with various document and image formats.
@@ -23,7 +25,7 @@ This project is a Zonal Optical Character Recognition (OCR) application develope
 ### Prerequisites
 
 - Python >=3.9
-- Tkinter (usually comes pre-installed with Python. If not, you can install it using `pip install tk`)
+- Tkinter
 
 ### Installation
 
@@ -64,6 +66,6 @@ This project is licensed under the [MIT License](LICENSE) - see the LICENSE file
 ## Acknowledgments
 
 - PaddleOCR
-- 
+- CustomTkinter by TomSchimansky
 
 ---
