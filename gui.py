@@ -1,9 +1,11 @@
+import sqlite3
 import os
+import re
+
 import json
 import tkinter as tk
 from tkinter import Menu, filedialog, Frame, Canvas, Scrollbar, Label, Entry, Button, simpledialog, PhotoImage, ttk
 import fitz
-print("PyMuPDF Version:", fitz.__doc__)
 from PIL import Image, ImageTk
 import pytesseract
 from PIL import ImageOps
@@ -19,13 +21,15 @@ import cv2
 import json
 import io
 import numpy as np
+from dotenv import load_dotenv
 
+pytesseract.pytesseract.tesseract_cmd = r'.\tesseract_bin\tesseract.exe'
+load_dotenv()
 
-
-class ZonalOCRApplication(tk.Tk):
+class KeyValueModelBuilder(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Zonal OCR Application")
+        self.title("Key-Value Model Builder")
         self.geometry("1200x850")
         self.pdf_document = None
         self.current_page = 0
@@ -50,45 +54,84 @@ class ZonalOCRApplication(tk.Tk):
         self.zones_info = []
         os.makedirs("ocr_results", exist_ok=True)
         self.file_paths = {}
-        self.document_database_path = 'document_database.json'
+        self.create_database()
         self.document_database = self.load_document_database()
         self.populate_treeview_with_database()
         self.update_folder_sizes()
         self.apply_alternating_row_colors()
-        self.initialize_paddleocr()
+        self.initialize_ocr_engine()
 
     def init_ui(self):
-        main_frame = tk.Frame(self)
+        main_frame = ctk.CTkFrame(self)
         main_frame.pack(expand=True, fill='both')
         
         self.notebook = ttk.Notebook(main_frame)
-        self.document_viewer_tab = tk.Frame(self.notebook)
-        self.notebook.add(self.document_viewer_tab, text='Document Files')
-        self.ocr_tab = tk.Frame(self.notebook)
-        self.notebook.add(self.ocr_tab, text='OCR Zone Creation')
+        self.document_files_list = ctk.CTkFrame(self.notebook)
+        self.notebook.add(self.document_files_list, text='Document Files')
+        self.document_viewer = ctk.CTkFrame(self.notebook)
+        # self.notebook.add(self.document_viewer, text='File Viewer')
 
-
-        # Using grid for layout management within the main frame.
         self.notebook.grid(row=0, column=0, sticky="nsew")
-        self.create_document_viewer(self.document_viewer_tab)
-        self.create_canvas(self.ocr_tab)
-        self.create_control_frame(self.ocr_tab)
+        self.create_document_viewer(self.document_files_list)
+        self.create_canvas(self.document_viewer)
+        self.create_control_frame(self.document_viewer)
         self.create_menu_bar()
         self.create_status_bar(main_frame)
 
-        # Configure the main frame's grid
         main_frame.grid_rowconfigure(0, weight=1)  # Give notebook most of the space
-        main_frame.grid_rowconfigure(1, weight=0)  # Status bar takes minimum space needed
+        main_frame.grid_rowconfigure(1, weight=0)  # Status bar 
         main_frame.grid_columnconfigure(0, weight=1)
 
-        self.ocr_engine = 'PaddleOCR'  # default OCR engine - change to .env
-        self.google_vision_client = None
+        self.ocr_engine = os.getenv('OCR_Engine', 'PaddleOCR')
+
+    def initialize_ocr_engine(self):
+        if self.ocr_engine == "PaddleOCR":
+            self.initialize_paddleocr()
+        elif self.ocr_engine == "Google_Vision":
+            self.initialize_google_vision()
+        elif self.ocr_engine == "EasyOCR":
+            self.initialize_easyocr()
 
     def initialize_paddleocr(self):
         self.ocr = PaddleOCR(use_angle_cls=True, det=True, rec=True, rec_char_type='EN', det_db_box_thresh=0.5, det_db_thresh=0.3)
 
     def initialize_google_vision(self):
-            self.google_vision_client = vision.ImageAnnotatorClient()
+        self.google_vision_client = vision.ImageAnnotatorClient()
+
+    def initialize_easyocr(self):
+        self.easy_ocr = None #finish this
+        print("EasyOCR Not Setup Yet")
+
+    def create_database(self):
+        conn = sqlite3.connect('document_database.sqlite')
+        cursor = conn.cursor()
+
+        cursor.execute('''CREATE TABLE IF NOT EXISTS documents
+                    (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_name TEXT NOT NULL,
+                    upload_date TEXT NOT NULL,
+                    progress TEXT NOT NULL,
+                    filetype TEXT,
+                    page_count TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    size TEXT NOT NULL,
+                    dimensions TEXT NOT NULL,
+                    unique_id TEXT NOT NULL,
+                    file_path TEXT NOT NULL)''')
+        
+        # cursor.execute('''CREATE TABLE IF NOT EXISTS document_pages
+        #             (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        #             file_name TEXT NOT NULL,
+        #             upload_date TEXT NOT NULL,
+        #             filetype TEXT,
+        #             page_count TEXT NOT NULL,
+        #             status TEXT NOT NULL,
+        #             size TEXT NOT NULL,
+        #             dimensions TEXT NOT NULL,
+        #             unique_id TEXT NOT NULL,
+        #             file_path TEXT NOT NULL)''')
+        conn.commit()
+        conn.close()
 
 
     def adjust_columns(self, event=None):
@@ -98,17 +141,49 @@ class ZonalOCRApplication(tk.Tk):
 
 
     def load_document_database(self):
-        self.document_database_path = 'document_database.json'
         try:
-            if os.path.exists(self.document_database_path) and os.path.getsize(self.document_database_path) > 0:
-                with open(self.document_database_path, 'r') as db_file:
-                    return json.load(db_file)
-            else:
-                return []
-        except json.JSONDecodeError:
-            print("Error reading the document database. The file might be corrupted.")
+            conn = sqlite3.connect('document_database.sqlite')
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM documents')
+            rows = cursor.fetchall()
+            conn.close()
+
+            document_database = []
+            for row in rows:
+                itemId, file_name, upload_date, progress, filetype, page_count, status, size, dimensions, unique_id, file_path = row
+                size_match = re.search(r"(\d+\.\d+)", size) if size is not None else None
+                formatted_size = "{:.2f} MB".format(float(size_match.group(1))) if size_match else "N/A"
+                document = {
+                    'item_id': itemId,
+                    'file_name': file_name,
+                    'upload_date': upload_date,
+                    'progress': progress,
+                    'filetype': filetype,
+                    'page_count': page_count,
+                    'status': status,
+                    'size': formatted_size,
+                    'dimensions': dimensions,
+                    'unique_id': unique_id,
+                    'file_path': file_path,
+                }
+                document_database.append(document)
+            return document_database
+        except Exception as e:
+            print(f"Error reading the document database: {e}")
             return []
         
+
+    def insert_document(self, document):
+        conn = sqlite3.connect('document_database.sqlite')
+        cursor = conn.cursor()
+        cursor.execute('''INSERT INTO documents
+                    (file_name, upload_date, progress, filetype, page_count, status, size, dimensions, unique_id, file_path)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+                    (document['file_name'], document['upload_date'], document['progress'], document['filetype'], document['page_count'], document['status'], document['size'], str(document['dimensions']), document['unique_id'], document['file_path']))
+        conn.commit()
+        conn.close()
+
+
     def populate_treeview_with_database(self):
         for doc in self.document_database:
             self.document_list.insert('', 'end', values=(
@@ -162,7 +237,7 @@ class ZonalOCRApplication(tk.Tk):
         # Variable to store the selected model
         self.selected_model = tk.StringVar(parent)
         self.model_option_menu = ctk.CTkOptionMenu(master=button_frame, variable=self.selected_model, values=self.get_model_names())
-        self.model_option_menu.pack(side=tk.LEFT, padx=5, pady=5)
+        self.model_option_menu.pack(side=tk.RIGHT, padx=5, pady=5)
         self.selected_model.set('Select Model')
         # Optionally, you can add a trace to the variable to handle changes
         self.selected_model.trace("w", self.on_model_selected)
@@ -174,7 +249,13 @@ class ZonalOCRApplication(tk.Tk):
             selected_model = self.selected_model.get()
             print(f"Model selected: {selected_model}")
 
+    def show_file_viewer_tab(self):
+        """dd the 'File Viewer' tab to the notebook."""
+        if self.document_viewer not in self.notebook.tabs():
+            self.notebook.add(self.document_viewer, text='File Viewer')
+
     def open_document(self, event):
+        self.show_file_viewer_tab()
         item_id = self.document_list.identify_row(event.y)
         selected_item = self.document_list.focus()
         if item_id:
@@ -186,7 +267,7 @@ class ZonalOCRApplication(tk.Tk):
                 self.png_files = [os.path.join(target_directory, f"{file_name}_page_{page_num}.png") for page_num in range(1, int(pages) + 1)]
                 self.current_page = 0
                 self.total_pages = len(self.png_files)
-                self.notebook.select(self.ocr_tab)
+                self.notebook.select(self.document_viewer)
                 self.display_page()
             else:
                 print(f"Open Document - File path not found for {file_name}")
@@ -206,24 +287,52 @@ class ZonalOCRApplication(tk.Tk):
             except ValueError as e:
                 print(f"Error unpacking item values:: {e}. Item values: {item['values']}")
                 return
-            self.update_document_data(unique_id, status="Scanning") # pushed to perform ocr with progress to see if itll change on the users side
+            self.update_document_data(unique_id, status="Scanning")
+
+            def start_ocr_process():
+                try:
+                    target_directory = self.get_file_path(unique_id)
+                    if target_directory and os.path.isdir(target_directory):
+                        for page_num in range(1, pages + 1):
+                            png_file = f"{file_name}_page_{page_num}.png"
+                            file_path = os.path.join(target_directory, png_file)
+                            self.perform_ocr_with_progress(page_num, file_name, pages, file_path, unique_id, item_id)
+                except Exception as e:
+                    print(f"There was an exception: {e}")
+                    self.update_document_data(unique_id, status="New")
+                else:
+                    print(f"Scan document - Target directory not found for {file_name}")
             try:
-                target_directory = self.get_file_path(unique_id)
-                if target_directory and os.path.isdir(target_directory):
-                    for page_num in range(1, pages + 1):
-                        png_file = f"{file_name}_page_{page_num}.png"
-                        file_path = os.path.join(target_directory, png_file)
-                        self.perform_ocr_with_progress(page_num, file_name, pages, file_path, unique_id, item_id)
-                        # ocr_thread = threading.Thread(target=self.perform_ocr_with_progress, args=(page_num, file_name, pages, file_path, unique_id, item_id))
-                        # ocr_thread.start()
+                ocr_thread = threading.Thread(target=start_ocr_process)
+                ocr_thread.start()
             except Exception as e:
-                print(f"There was an exception: {e}")
-                self.update_document_data(unique_id, status="New")
-            else:
-                print(f"Scan document - Target directory not found for {file_name}")
+                    print(f"There was an exception during threading: {e}")
+                    self.update_document_data(unique_id, status="New")
         else:
             print("No document selected")
             
+
+    def delete_document_from_database(self, unique_id):
+        conn = sqlite3.connect('document_database.sqlite')
+        cursor = conn.cursor()
+        cursor.execute('''DELETE FROM documents WHERE unique_id = ?''', (unique_id,))
+        conn.commit()
+        conn.close()
+
+    def update_document_in_database(self, unique_id, **kwargs):
+        try:
+            conn = sqlite3.connect('document_database.sqlite')
+            cursor = conn.cursor()
+            update_fields = ', '.join([f"{key} = ?" for key in kwargs.keys()])
+            update_values = list(kwargs.values())
+            update_values.append(unique_id)
+            cursor.execute(f"UPDATE documents SET {update_fields} WHERE unique_id = ?", update_values)
+            conn.commit()
+        except Exception as e:
+            print(f"Error updating document in database: {e}")
+        finally:
+            conn.close()
+
     def delete_document(self):
         selected_item = self.document_list.selection()
         if selected_item:
@@ -233,12 +342,13 @@ class ZonalOCRApplication(tk.Tk):
                 if doc['unique_id'] == unique_id:
                     target_directory = os.path.join("ocr_results", unique_id)
                     if os.path.exists(target_directory):
-                        shutil.rmtree(target_directory)
-                    del self.document_database[i]
+                        shutil.rmtree(target_directory) 
+                    self.delete_document_from_database(unique_id)
                     break
             self.document_list.delete(item_id)
             self.update_document_database_from_treeview()
-            self.save_document_database()
+            self.document_database = [doc for doc in self.document_database if doc["unique_id"] != unique_id]
+            self.apply_alternating_row_colors()
         else:
             print("No document selected")
 
@@ -260,11 +370,6 @@ class ZonalOCRApplication(tk.Tk):
                 self.context_menu.tk_popup(event.x_root, event.y_root)
             finally:
                 self.context_menu.grab_release()
-
-    def add_progress_bar(self, row_id):
-        progress_bar = ttk.Progressbar(self.document_list_frame, orient="horizontal", length=100, mode="determinate")
-        progress_bar.grid(row=row_id, column=1) 
-        return progress_bar
     
 
     def on_treeview_select(self, event):
@@ -303,7 +408,9 @@ class ZonalOCRApplication(tk.Tk):
 
                 progress = (page_num) / total_pages * 100
                 self.update_folder_sizes()
-                self.update_document_data(unique_id, progress=progress, dimensions=original_dimensions, status="To Review")
+                self.update_document_data(unique_id, progress=progress, dimensions=original_dimensions)
+                if progress == 100:
+                    self.update_document_data(unique_id, status="To Review")
             except Exception as e:
                 print(f"OCR Performance fucked up:: {e}")
                 self.update_document_data(unique_id, status="New")
@@ -388,73 +495,83 @@ class ZonalOCRApplication(tk.Tk):
             doc['size'] = f"{size_in_mb:.2f} MB"
             if self.document_list.exists(doc['item_id']):
                 self.document_list.set(doc['item_id'], 'Size', doc['size'])
-        self.save_document_database()
 
 
     def add_document(self):
         file_paths = filedialog.askopenfilenames(filetypes=[
-                ("PDF files", "*.pdf"),
-                ("JPEG files", "*.jpeg"),
-                ("JPG files", "*.jpg"),
-                ("PNG files", "*.png"),
-                # ("All files", "*.*")
-            ]
-        )
+            ("All files", "*.pdf;*.jpeg;*.jpg;*.png"),
+            ("PDF files", "*.pdf"),
+            ("JPEG files", "*.jpeg"),
+            ("JPG files", "*.jpg"),
+            ("PNG files", "*.png")
+        ])
         if file_paths:
             for file_path in file_paths:
-                file_name = os.path.basename(file_path)
-                base_name, file_extension = os.path.splitext(file_name)
-                file_extension = file_extension.lower()
-                if any(doc['file_name'] == base_name for doc in self.document_database):
-                    print(f"Document '{base_name}' is already uploaded. Skipping.")
-                    continue
-                unique_id = str(uuid.uuid4())
-                target_directory = os.path.join("ocr_results", unique_id)
-                os.makedirs(target_directory, exist_ok=True)
-                target_path = os.path.join(target_directory)
-                filetype = "Unknown"
-                page_count = 0
-                dimensions = [0,0]
-                if file_extension == '.pdf':
-                    page_count, dimensions, png_paths = self.convert_to_png(file_path, target_directory, base_name)
-                    filetype = "PDF"
-                elif file_extension in ['.png', '.jpeg', '.jpg']:
-                    shutil.copy(file_path, target_path)
-                    filetype = file_extension[1:].upper()
-                    if file_extension == '.png':
-                        page_count = len([f for f in os.listdir(target_directory) if f.endswith('.png')])
-                    elif file_extension == '.jpeg':
-                        page_count = len([f for f in os.listdir(target_directory) if f.endswith('.jpeg')])
-                    elif file_extension == '.jpg':
-                        page_count = len([f for f in os.listdir(target_directory) if f.endswith('.jpg')])
-                    else:
-                        print(f"File type: '{file_extension}' not supported.")
-                        return
-
-                folder_size = self.get_folder_size(target_directory)
-                size_in_mb = folder_size / (1024 * 1024)
-                upload_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%p")
-                print('doc dimensions::', dimensions)
-                item_id = self.document_list.insert('', 'end', values=(base_name, upload_date, "0%", filetype, str(page_count), "New", f"{size_in_mb:.2f} MB", dimensions, unique_id))
-                self.document_database.append({
-                    'file_name': base_name,
-                    'upload_date': upload_date,
-                    'progress': "0%",
-                    'item_id': item_id,
-                    'file_path': target_path,
-                    'filetype': filetype,
-                    'page_count': str(page_count),
-                    'status': "To Review",
-                    'size': f"{size_in_mb:.2f} MB",
-                    'dimensions': dimensions,
-                    'unique_id': unique_id # Must stay last field
-                })
-                self.update_document_data(unique_id, page_count=str(page_count), status="New", size=size_in_mb, filetype=filetype)
-
-            self.save_document_database()
+                self.process_single_document(file_path)
             self.apply_alternating_row_colors()
-            
 
+    def process_single_document(self, file_path):
+        file_name = os.path.basename(file_path)
+        base_name, file_extension = os.path.splitext(file_name)
+        file_extension = file_extension.lower()
+        if any(doc['file_name'] == base_name for doc in self.document_database):
+            print(f"Document '{base_name}' is already uploaded. Skipping.")
+            return
+        unique_id = str(uuid.uuid4())
+        target_directory = os.path.join("ocr_results", unique_id)
+        os.makedirs(target_directory, exist_ok=True)
+        target_path = os.path.join(target_directory)
+        filetype = "Unknown"
+        page_count = 0
+        dimensions = [0,0]
+        if file_extension == '.pdf':
+            page_count, dimensions, png_paths = self.convert_to_png(file_path, target_directory, base_name)
+            filetype = "PDF"
+        elif file_extension in ['.png', '.jpeg', '.jpg']:
+            shutil.copy(file_path, target_path)
+            filetype = file_extension[1:].upper()
+            if file_extension == '.png':
+                new_file_name = f"{base_name}_page_1{file_extension}"
+                target_file_path = os.path.join(target_directory, new_file_name)
+                shutil.copy(file_path, target_file_path)
+                filetype = file_extension[1:].upper()
+                page_count = len([f for f in os.listdir(target_directory) if f.endswith('.png')])
+                img = Image.open(file_path)
+                dimensions = [img.width, img.height]
+            elif file_extension == '.jpeg':
+                page_count = len([f for f in os.listdir(target_directory) if f.endswith('.jpeg')])
+                img = Image.open(file_path)
+                dimensions = [img.width, img.height]
+            elif file_extension == '.jpg':
+                page_count = len([f for f in os.listdir(target_directory) if f.endswith('.jpg')])
+                img = Image.open(file_path)
+                dimensions = [img.width, img.height]
+            else:
+                print(f"File type: '{file_extension}' not supported.")
+                return
+
+        folder_size = self.get_folder_size(target_directory)
+        size_in_mb = folder_size / (1024 * 1024)
+        upload_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%p")
+        item_id = self.document_list.insert('', 'end', values=(base_name, upload_date, "0%", filetype, str(page_count), "New", f"{size_in_mb:.2f} MB", dimensions, unique_id))
+        self.insert_document({
+            'file_name': base_name,
+            'upload_date': upload_date,
+            'progress': "0%",
+            'item_id': item_id,
+            'file_path': target_path,
+            'filetype': filetype,
+            'page_count': str(page_count),
+            'status': "To Review",
+            'size': f"{size_in_mb:.2f} MB",
+            'dimensions': dimensions,
+            'unique_id': unique_id # Must stay last field
+        })
+        self.update_document_data(unique_id, page_count=str(page_count), status="New", size=size_in_mb, filetype=filetype)
+        self.apply_alternating_row_colors()
+        self.document_database = self.load_document_database()
+        self.document_list.update_idletasks() # Update UI immediately after processing each document
+            
     def convert_to_png(self, source_path, target_directory, base_name, dpi=600):
         try:
             file_extension = os.path.splitext(source_path)[1].lower()
@@ -497,37 +614,29 @@ class ZonalOCRApplication(tk.Tk):
             item_values = self.document_list.item(item, 'values')
             if item_values[-1] == unique_id:
                 item_id = item
-                def _update():
-                    print(f"Updating Treeview item: {item_id}")
-                    if progress is not None:
-                        self.document_list.set(item_id, 'Progress', f"{int(progress)}%")
-                    if filetype is not None:
-                        self.document_list.set(item_id, 'Filetype', filetype)
-                    if page_count is not None:
-                        self.document_list.set(item_id, 'Pages', str(page_count))
-                    if status is not None:
-                        self.document_list.set(item_id, 'Status', status)
-                    if size is not None:
-                        self.document_list.set(item_id, 'Size', f"{size:.2f} MB")
-                self.after(0, _update)
+                # print(f"Updating Treeview item: {item_id}")
+                update_kwargs = {}
+                if progress is not None:
+                    self.document_list.set(item_id, 'Progress', f"{int(progress)}%")
+                    update_kwargs['progress'] = f"{int(progress)}%"
+                if filetype is not None:
+                    self.document_list.set(item_id, 'Filetype', filetype)
+                    update_kwargs['filetype'] = filetype
+                if page_count is not None:
+                    self.document_list.set(item_id, 'Pages', str(page_count))
+                    update_kwargs['page_count'] = str(page_count)
+                if status is not None:
+                    self.document_list.set(item_id, 'Status', status)
+                    update_kwargs['status'] = status
+                if size is not None:
+                    formatted_size = f"{size:.2f} MB"
+                    self.document_list.set(item_id, 'Size', formatted_size)
+                    update_kwargs['size'] = formatted_size
+                if dimensions:
+                    formatted_dimensions = f"[{dimensions[0]},{dimensions[1]}]"  # Format as '[width,height]'
+                    update_kwargs['dimensions'] = formatted_dimensions
 
-                for doc in self.document_database:
-                    if doc['unique_id'] == unique_id:
-                        if progress is not None:
-                            doc['progress'] = f"{int(progress)}%"
-                        if filetype is not None:
-                            doc['filetype'] = filetype
-                        if page_count is not None:
-                            doc['page_count'] = str(page_count)
-                        if status is not None:
-                            doc['status'] = status
-                        if size is not None:
-                            doc['size'] = f"{size:.2f} MB"
-                        if dimensions is not None:
-                            doc['dimensions'] = dimensions    
-                        break
-
-                self.save_document_database()
+                self.update_document_in_database(unique_id, **update_kwargs)
                 return
         else:
             print(f"File {unique_id} not found in Treeview")
@@ -542,18 +651,6 @@ class ZonalOCRApplication(tk.Tk):
         self.total_pages = len(self.pdf_document)
         self.page_sizes = [page.rect.br - page.rect.tl for page in self.pdf_document]  
         self.current_page = 0
-
-
-    # def load_pdf(self, file_path, unique_id):
-    #     self.pdf_document = fitz.open(file_path)
-    #     self.total_pages = len(self.pdf_document)
-    #     self.page_sizes = [page.rect.br - page.rect.tl for page in self.pdf_document]  
-    #     self.current_page = 0
-
-    #     self.notebook.select(self.ocr_tab)
-    #     self.canvas.update_idletasks()
-    #     self.load_json_data(file_path, self.current_page, unique_id)
-    #     self.display_page(unique_id)
 
 
     def load_json_data(self, file_path, page_num, unique_id):
@@ -571,7 +668,7 @@ class ZonalOCRApplication(tk.Tk):
     def create_menu_bar(self):
         menu_bar = tk.Menu(self)
         file_menu = tk.Menu(menu_bar, tearoff=0)
-        file_menu.add_command(label="Load PDF", command=self.select_pdf)
+        file_menu.add_command(label="Import Document", command=self.select_pdf)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.quit)
         template_menu = tk.Menu(menu_bar, tearoff=0)
@@ -580,8 +677,13 @@ class ZonalOCRApplication(tk.Tk):
         template_menu.add_command(label="Load Template", command=self.load_template)
         template_menu.add_separator()
         template_menu.add_command(label="New Template", command=self.new_template)
+
+        model_menu = tk.Menu(menu_bar, tearoff=0)
+        model_menu.add_command(label="New", command=self.select_pdf)
+
         menu_bar.add_cascade(label="File", menu=file_menu)
         menu_bar.add_cascade(label="Templates", menu=template_menu)
+        menu_bar.add_cascade(label="Model", menu=model_menu)
         self.config(menu=menu_bar)
     
     def new_template(self):
@@ -629,9 +731,9 @@ class ZonalOCRApplication(tk.Tk):
         load_button.pack()
 
     def apply_template(self, template_data):
-        if not self.pdf_document or self.current_page >= self.total_pages:
-            print("No PDF document loaded or invalid page number.")
-            return
+        # if not self.pdf_document or self.current_page >= self.total_pages:
+        #     print("No PDF document loaded or invalid page number.")
+        #     return
         current_page_size = self.page_sizes[self.current_page]
         self.clear_zones()
         current_page_size = self.page_sizes[self.current_page]
@@ -664,63 +766,82 @@ class ZonalOCRApplication(tk.Tk):
         self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
 
     def create_control_frame(self, parent):
-        control_frame = ctk.CTkFrame(parent, width=200)
-        control_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5)
+        control_frame = ctk.CTkFrame(parent, width=200, fg_color="transparent")
+        control_frame.pack(side=tk.TOP, fill=tk.X, padx=0, pady=(10,0))
         control_frame.pack_propagate(0)
-        nav_frame = tk.Frame(control_frame)
-        nav_frame.grid(row=6, column=0, sticky="ew", padx=10, pady=10)
+
+        progress_bar = ctk.CTkProgressBar(control_frame, orientation="horizontal")
+        progress_bar.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 0))
+        progress_value = 0.15
+        progress_bar.set(progress_value)
+        nav_frame = ctk.CTkFrame(control_frame)
+        nav_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
         prev_btn = ctk.CTkButton(nav_frame, text="<< Previous", command=self.prev_page)
         prev_btn.pack(side=tk.LEFT, expand=True, fill=tk.X)
-        self.page_count_label = tk.Label(nav_frame, text=f"Page {self.current_page + 1} of {self.total_pages}")
-        self.page_count_label.pack(side=tk.LEFT, expand=True)
+        self.page_count_label = ctk.CTkLabel(nav_frame, text=f"Page {self.current_page + 1} of {self.total_pages}")
+        self.page_count_label.pack(side=tk.LEFT, expand=True, padx=10)
         next_btn = ctk.CTkButton(nav_frame, text="Next >>", command=self.next_page)
         next_btn.pack(side=tk.LEFT, expand=True, fill=tk.X)
-        # btn = ctk.CTkButton(control_frame, text="Select a PDF", command=self.select_pdf)
-        # btn.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
-        # ocr_btn = ctk.CTkButton(control_frame, text="Perform OCR", command=self.perform_ocr)
-        # ocr_btn.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
-        # toggle_labels_btn = ctk.CTkButton(control_frame, text="Toggle Labels", command=self.toggle_zone_labels)
-        # toggle_labels_btn.grid(row=2, column=0, sticky="ew", padx=10, pady=10)
-        # self.page_count_label = tk.Label(control_frame, text="Page: 0 of 0") # remove comment to view page numbers under zone labels
-        # self.page_count_label.grid(row=9, column=0, sticky="ew", padx=10, pady=10) # remove comment to view page numbers under zone labels
-        # add_zone_btn = ctk.CTkButton(control_frame, text="Add Zone", command=self.add_zone_field)
-        # add_zone_btn.grid(row=3, column=0, sticky="ew", padx=10, pady=10)
-        # self.template_var = tk.StringVar(self)
-        # self.template_dropdown = ttk.OptionMenu(control_frame, self.template_var, '')
-        # self.template_dropdown.grid(row=4, column=0, sticky="ew", padx=10, pady=10)
-        # self.update_template_dropdown()
-        # style = ttk.Style()
-        # style.theme_use('clam')
-        # style.configure('TButton', font=('Helvetica', 10), borderwidth=0, focuscolor=style.configure(".")["background"])
-        # style.configure('TEntry', font=('Helvetica', 10), borderwidth=0)
-        # load_template_btn = ctk.CTkButton(control_frame, text="Load Template", command=self.load_selected_template)
-        # load_template_btn.grid(row=5, column=0, sticky="ew", padx=10, pady=10)
-        # self.is_on = True
-        # self.on_image = PhotoImage(file="static\on.png").subsample(2, 2)
-        # self.off_image = PhotoImage(file="static\off.png").subsample(2, 2)
-        # self.toggle_switch = Button(control_frame, image=self.on_image, bd=0, command=self.toggle_zone_labels)
-        # self.toggle_switch.grid(row=6, column=0, sticky="e", padx=20, pady=10)
         self.switch_var = tk.StringVar(value="on")
         self.switch = ctk.CTkSwitch(master=control_frame, variable=self.switch_var, text="Labels", command=self.toggle_zone_labels, onvalue="on", offvalue="off")
-        self.switch.grid(row=7, column=0, sticky="e", padx=20, pady=10)
+        self.switch.grid(row=2, column=0, sticky="e", padx=10, pady=(10,0))
 
-        self.attributes('-alpha',1)
-        zone_scroll_frame = tk.Frame(control_frame)
-        zone_scroll_frame.grid(row=8, column=0, sticky="nsew", padx=2, pady=2)
-        control_frame.grid_columnconfigure(0, weight=1)
-        control_frame.grid_rowconfigure(8, weight=1)
-        self.zone_canvas = tk.Canvas(zone_scroll_frame)
-        self.zone_canvas.pack(side="left", fill="both", expand=True)
-        scrollbar = tk.Scrollbar(zone_scroll_frame, orient="vertical", command=self.zone_canvas.yview)
-        scrollbar.pack(side="right", fill="y")
-        self.zone_canvas.config(yscrollcommand=scrollbar.set)
-        self.zone_info_frame = tk.Frame(self.zone_canvas)
-        self.zone_canvas.create_window((0, 0), window=self.zone_info_frame, anchor="nw", width=self.zone_canvas.cget('width'))
-        self.zone_canvas.bind("<MouseWheel>", self.scroll_zone_canvas)
-        self.zone_info_frame.bind("<MouseWheel>", self.scroll_zone_canvas)
-        self.zone_info_frame.bind("<Configure>", lambda e: self.zone_canvas.configure(scrollregion=self.zone_canvas.bbox("all")))
-        # upload_btn = ctk.CTkButton(control_frame, text="Upload Document", command=self.add_document)
-        # upload_btn.grid(row=3, column=0, sticky="ew", padx=10, pady=10)
+        tab_view = ctk.CTkTabview(master=parent)
+        tab_view.pack(expand=True, fill="both", padx=5, pady=(0 ,20))
+
+        labels_tab = tab_view.add("Labels")  
+        json_data_tab = tab_view.add("JSON")  
+        ocr_data_tab = tab_view.add("OCR Data")
+        key_value_tab = tab_view.add("Kay-Value")
+
+        json_label = ctk.CTkLabel(json_data_tab, text="JSON Content goes here")
+        json_label.pack(padx=0, pady=0)
+
+        key_value_label = ctk.CTkLabel(key_value_tab, text="Key-Value Content goes here")
+        key_value_label.pack(padx=0, pady=0)
+
+        # Results Tab canvas and scrollbar
+        self.results_scrollable_frame = ctk.CTkScrollableFrame(labels_tab, fg_color="white")
+        self.results_scrollable_frame.pack(fill="both", expand=True)
+
+        checkboxinfo_frame = ctk.CTkFrame(self.results_scrollable_frame)
+        checkboxinfo_frame_var = ctk.StringVar(value="off")
+        checkboxinfo_checkbox = ctk.CTkCheckBox(checkboxinfo_frame, text="This is a static checkbox", variable=checkboxinfo_frame_var, onvalue="on", offvalue="off")
+        checkboxinfo_frame.pack(fill='x', expand=True, pady=0, padx=0)
+        checkboxinfo_checkbox.pack(fill='x', expand=True, pady=5, padx=5)
+
+        # for i in range(1):
+        #     self.zone_info_frame = ctk.CTkFrame(results_scrollable_frame)
+        #     self.zone_info_frame.pack(fill='x', expand=True, pady=5, padx=2)
+
+        
+
+        # zone_scroll_frame = tk.Frame(labels_tab) 
+        # zone_scroll_frame.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+        # labels_tab.grid_columnconfigure(0, weight=1) 
+        # labels_tab.grid_rowconfigure(0, weight=1)  
+        # self.zone_canvas = tk.Canvas(zone_scroll_frame)
+        # self.zone_canvas.pack(side="left", fill="both", expand=True)
+        # scrollbar = ctk.CTkScrollbar(zone_scroll_frame, orientation="vertical", command=self.zone_canvas.yview)
+        # scrollbar.pack(side="right", fill="y")
+        # self.zone_canvas.config(yscrollcommand=scrollbar.set)
+        # self.zone_info_frame = ctk.CTkFrame(self.zone_canvas)
+        # self.zone_canvas.create_window((0, 0), window=self.zone_info_frame, anchor="nw", width=self.zone_canvas.cget('width'))
+        # self.zone_canvas.bind("<MouseWheel>", self.scroll_zone_canvas)
+        # self.zone_info_frame.bind("<MouseWheel>", self.scroll_zone_canvas)
+        # self.zone_info_frame.bind("<Configure>", lambda e: self.zone_canvas.configure(scrollregion=self.zone_canvas.bbox("all")))
+
+        # OCR Data Tab canvas and scrollbar setup
+        ocr_data_scrollable_frame = ctk.CTkScrollableFrame(ocr_data_tab, fg_color="white")
+        ocr_data_scrollable_frame.pack(fill="both", expand=True, padx=0, pady=0)
+        # self.ocr_data_zone_info_frame = ctk.CTkFrame(ocr_data_scrollable_frame)
+        for i in range(10):
+            tets_ocr_data_zone_info_frame = ctk.CTkFrame(ocr_data_scrollable_frame)
+            tets_ocr_data_zone_info_frame.pack(fill='x', expand=True, pady=2, padx=2)
+            example_label = ctk.CTkLabel(tets_ocr_data_zone_info_frame, text=f" {i}. Example content inside scrollable frame.")
+            example_label.pack(fill='x', expand=True, pady=10, padx=10)
+        # self.ocr_data_zone_info_frame.pack(fill="both", expand=True)
+
 
 
     def scroll_zone_canvas(self, event):
@@ -779,19 +900,16 @@ class ZonalOCRApplication(tk.Tk):
         self.load_json_data(png_file_path, self.current_page, self.current_unique_id)
         try:
             img = Image.open(png_file_path)
-            window_width, window_height = self.canvas.winfo_width(), self.canvas.winfo_height()
+            canvas_width, canvas_height = self.canvas.winfo_width(), self.canvas.winfo_height()
 
-            if hasattr(self, 'current_unique_id'):
-                doc_info = next((doc for doc in self.document_database if doc['unique_id'] == self.current_unique_id), None)
-                if doc_info and 'dimensions' in doc_info:
-                    original_width, original_height = doc_info['dimensions']
-                    zoom_factor = min(window_width / original_width, window_height / original_height)
-                else:
-                    print("Original dimensions not found for the current document.")
-                    return
-            else:
-                print("No document unique ID available.")
-                return
+            # Buffer space for the control frame (adjust as needed)
+            control_frame_buffer = 75
+
+            # Calculate zoom factor based on width and height with buffer space
+            width_zoom = (canvas_width - control_frame_buffer) / img.width
+            height_zoom = canvas_height / img.height
+            zoom_factor = min(width_zoom, height_zoom, 1)  # Ensure the image is not enlarged
+
             img_resized = img.resize((int(img.width * zoom_factor), int(img.height * zoom_factor)), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(img_resized)
             self.canvas.config(width=img_resized.width, height=img_resized.height)
@@ -800,14 +918,12 @@ class ZonalOCRApplication(tk.Tk):
             self.adjust_zones_to_canvas_size()
             self.status_bar.config(text=f"Page {self.current_page + 1} of {self.total_pages}")
             self.update_canvas_scale()  
-            self.clear_bounding_boxes()
-            show_saved_ocr_zones = self.show_saved_ocr_zones()
-            if show_saved_ocr_zones == True:
-                if self.current_json_data: # display OCRd zones for debugging
-                    for item in self.current_json_data: 
-                        bbox = item.get('bbox', [])
-                        if bbox:
-                            self.draw_bbox_on_canvas(bbox, zoom_factor) 
+            self.clear_ocr_bounding_boxes()
+            if self.show_saved_ocr_zones() and self.current_json_data:
+                for item in self.current_json_data: 
+                    bbox = item.get('bbox', [])
+                    if bbox:
+                        self.draw_bbox_on_canvas(bbox, zoom_factor) 
         except Exception as e:
             print(f"Failed to load or display page image: {e}")
 
@@ -819,21 +935,21 @@ class ZonalOCRApplication(tk.Tk):
             self.canvas_scale = min(canvas_width / img_width, canvas_height / img_height)
 
     def draw_bbox_on_canvas(self, bbox, zoom_factor): # display OCRd zones for debugging
-        x1, y1 = bbox[0]
-        x2, y2 = bbox[2]
-        scaled_x1, scaled_y1 = x1 * zoom_factor, y1 * zoom_factor
-        scaled_x2, scaled_y2 = x2 * zoom_factor, y2 * zoom_factor
-        #print(f"Drawing box: {(scaled_x1, scaled_y1, scaled_x2, scaled_y2)}")
-        self.canvas.create_rectangle(scaled_x1, scaled_y1, scaled_x2, scaled_y2, outline="red", tags="debug-bbox")
+        x_min, y_min, x_max, y_max = bbox
+        scaled_x_min, scaled_y_min = x_min * zoom_factor, y_min * zoom_factor
+        scaled_x_max, scaled_y_max = x_max * zoom_factor, y_max * zoom_factor
+        self.canvas.create_rectangle(scaled_x_min, scaled_y_min, scaled_x_max, scaled_y_max, outline="red", tags="debug-bbox")
 
-    def clear_bounding_boxes(self): # display OCRd zones for debugging
+
+    def clear_ocr_bounding_boxes(self): # display OCRd zones for debugging
         self.canvas.delete("debug-bbox")
 
     def update_page_count_label(self):
-        self.page_count_label.config(text=f"Page {self.current_page + 1} of {self.total_pages}")
+        self.page_count_label.configure(text=f"Page {self.current_page + 1} of {self.total_pages}")
 
     def show_saved_ocr_zones(self):
-        return False #change to .env | display OCRd zones for debugging
+        env_value = os.getenv('show_saved_ocr_zones', 'False')
+        return env_value.lower() == 'true'
 
     def select_pdf(self):
         file_path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
@@ -865,17 +981,22 @@ class ZonalOCRApplication(tk.Tk):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def on_canvas_click(self, event):
+        clicked_inside_zone = False
         for zone in self.zones_info:
             if self.is_point_in_zone(event.x, event.y, zone):
-                if self.rect:
-                    self.canvas.delete(self.rect)  # Delete the prezone if it exists
-                return  # Click is inside an existing zone; do not create a new zone
-        self.start_x = self.canvas.canvasx(event.x)
-        self.start_y = self.canvas.canvasy(event.y)
-        self.rect = self.canvas.create_rectangle(
-            self.start_x, self.start_y, self.start_x, self.start_y, 
-            outline=self.get_unique_color(), width=2, dash=(4, 2)
-        )
+                clicked_inside_zone = True
+                self.show_tooltip_for_selected_zone(zone)
+                break  # Stop checking other zones as we found the clicked one
+
+        if not clicked_inside_zone:
+            if self.rect:
+                self.canvas.delete(self.rect)  # Delete the prezone if it exists
+            self.start_x = self.canvas.canvasx(event.x)
+            self.start_y = self.canvas.canvasy(event.y)
+            self.rect = self.canvas.create_rectangle(
+                self.start_x, self.start_y, self.start_x, self.start_y,
+                outline=self.get_unique_color(), width=2, dash=(4, 2)
+            )
 
     def on_canvas_drag(self, event):
         cur_x, cur_y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
@@ -907,7 +1028,7 @@ class ZonalOCRApplication(tk.Tk):
 
     def is_point_in_zone(self, x, y, zone):
         x1, y1, x2, y2 = self.canvas.coords(zone['rect'])
-        return x1 <= x <= x2 and y1 <= y <= y2
+        return (x1 <= x <= x2) and (y1 <= y <= y2)
 
     def extract_text_from_zone(self, zone_coords):
         if not self.current_json_data:
@@ -920,17 +1041,18 @@ class ZonalOCRApplication(tk.Tk):
         if not doc_info or 'dimensions' not in doc_info:
             print("Original dimensions not found for the current document.")
             return
-        original_width, original_height = doc_info['dimensions']
+        dimensions_str = doc_info['dimensions'].strip('[]')
+        original_width, original_height = map(int, dimensions_str.split(','))
         window_width, window_height = self.canvas.winfo_width(), self.canvas.winfo_height()
         zoom_factor = min(window_width / original_width, window_height / original_height)
-        inv_scale_x, inv_scale_y = 1 / zoom_factor, 1 / zoom_factor # Inverse scaling: scale up the zone coordinates
+        inv_scale_x, inv_scale_y = 1 / zoom_factor, 1 / zoom_factor
         scaled_x1, scaled_y1 = zone_coords[0] * inv_scale_x, zone_coords[1] * inv_scale_y
         scaled_x2, scaled_y2 = zone_coords[2] * inv_scale_x, zone_coords[3] * inv_scale_y
         print("Original Zone Coordinates:", zone_coords)
         print("Scaled Zone Coordinates:", scaled_x1, scaled_y1, scaled_x2, scaled_y2)
         zone_texts = []
         for item in self.current_json_data:
-            word_bbox = self.convert_bbox_to_dict(item.get('bbox', []))
+            word_bbox = item.get('bbox', [])
             if self.is_bbox_in_zone(word_bbox, scaled_x1, scaled_y1, scaled_x2, scaled_y2):
                 zone_texts.append(item.get('text', ''))
         print("Texts in the zone:", " ".join(zone_texts))
@@ -939,25 +1061,22 @@ class ZonalOCRApplication(tk.Tk):
         return {'vertices': [{'x': point[0], 'y': point[1]} for point in bbox]}
 
     def is_bbox_in_zone(self, bbox, x1, y1, x2, y2):
-        # Calculate the area of the bbox
-        bbox_x1, bbox_y1 = bbox['vertices'][0]['x'], bbox['vertices'][0]['y']
-        bbox_x2, bbox_y2 = bbox['vertices'][2]['x'], bbox['vertices'][2]['y']
+        # bbox format: [x_min, y_min, x_max, y_max]
+        bbox_x1, bbox_y1, bbox_x2, bbox_y2 = bbox
         bbox_area = abs((bbox_x2 - bbox_x1) * (bbox_y2 - bbox_y1))
 
-        # Calculate the overlapping area
         overlap_x1 = max(x1, bbox_x1)
         overlap_y1 = max(y1, bbox_y1)
         overlap_x2 = min(x2, bbox_x2)
         overlap_y2 = min(y2, bbox_y2)
-        
-        # Ensure that there is an overlap
+
         if overlap_x2 > overlap_x1 and overlap_y2 > overlap_y1:
             overlap_area = (overlap_x2 - overlap_x1) * (overlap_y2 - overlap_y1)
         else:
             overlap_area = 0
 
-        # Check if the overlap is at least 35% of the bbox area
-        return overlap_area >= 0.35 * bbox_area
+        return overlap_area >= float(os.getenv('zone_overlap', 0.35)) * bbox_area
+
 
 
     def on_canvas_resize(self, event):
@@ -986,40 +1105,51 @@ class ZonalOCRApplication(tk.Tk):
         self.canvas.itemconfigure(zone['label'], text=new_text)
 
     def add_zone_field(self, zone_name=None, coordinates=None):
-        frame = Frame(self.zone_info_frame, bg="#ffffff", bd=1, relief="flat")
-        frame.pack(pady=5, padx=10, fill="x", expand=True)
-        frame.bind("<MouseWheel>", self.scroll_zone_canvas)
-        top_frame = Frame(frame, bg="#ffffff")
-        top_frame.pack(side="top", fill="x")
+        color = self.get_unique_color()
+        zone_info_frame = ctk.CTkFrame(self.results_scrollable_frame)
+        zone_info_frame.pack(fill='x', expand=True, pady=5, padx=2)
+
+
+
+        top_frame = ctk.CTkFrame(zone_info_frame, fg_color="transparent")
+        top_frame.pack(side="top", fill="x", pady=5, padx=5)
         if not zone_name:
             zone_name = f"Zone_{len(self.zones_info) + 1}"
-        color = self.get_unique_color()
-        color_indicator = Canvas(top_frame, bg='white', width=20, height=20, bd=0, highlightthickness=0)
-        color_indicator.pack(side="left", padx=5, pady=5)
-        color_indicator.create_oval(2, 2, 18, 18, outline=color, fill=color)
-        zone_name_frame = Frame(top_frame, bg="#ffffff")
+        colorLineIndicator = ctk.CTkProgressBar(master=top_frame, orientation="vertical", fg_color=color, border_color=color, progress_color=color, height=30)
+        colorLineIndicator.set(1)
+        colorLineIndicator.pack(side="left", padx=(0, 3), pady=0)
+
+        zone_name_frame = ctk.CTkFrame(top_frame, fg_color="transparent")
         zone_name_frame.pack(side="left", fill="x", expand=True)
-        zone_label = Label(zone_name_frame, text="Zone Name:", bg="#ffffff", font=("Helvetica", 10))
+        zone_label = ctk.CTkLabel(zone_name_frame, text="Zone Name:", font=("Helvetica", 12.5))
         zone_label.pack(side="left", padx=0)
-        zone_entry = Entry(zone_name_frame, bd=1, relief="solid", font=("Helvetica", 10))
-        zone_entry.pack(side="left", fill="x", expand=True, padx=0, pady=(0, 2))
+
+        zone_entry = ctk.CTkEntry(zone_name_frame, font=("Helvetica", 12))
+        zone_entry.pack(side="left", fill="x", expand=True, padx=(0,5), pady=2)
         zone_entry.insert(0, zone_name)
-        delete_btn = ctk.CTkButton(top_frame, width=8, text="X", command=lambda: self.delete_zone(frame))
-        delete_btn.pack(side="right", padx=5)
-        ocr_output_text = tk.Text(frame, height=1.5, bg="#f7f7f7", bd=0, font=("Helvetica", 9), wrap=tk.WORD)
+
+            # delete_btn = ctk.CTkButton(top_frame, width=8, text="X", command=lambda: self.delete_zone(frame))
+            # delete_btn.pack(side="right", padx=5)
+        ocr_output_text = ctk.CTkTextbox(master=zone_info_frame, height=1.5, fg_color="#f7f7f7", font=("Helvetica", 12), wrap="word", border_color=color, border_width=1)
         ocr_output_text.pack(side="top", fill="x", padx=5, pady=2)
-        zone_type_frame = Frame(frame, bg="#ffffff")
-        zone_type_frame.pack(side="top", fill="x", expand=True)
-        zone_type_label = Label(zone_type_frame, text="Type:", bg="#ffffff", font=("Helvetica", 10))
-        zone_type_label.pack(side="left", padx=5)
+
+        zone_type_frame = ctk.CTkFrame(zone_info_frame, fg_color="transparent")
+        zone_type_frame.pack(side="top", fill="x", expand=True, pady=5, padx=5)
+        zone_type_label = ctk.CTkLabel(zone_type_frame, text="Type:", font=("Helvetica", 12.5))
+        zone_type_label.pack(side="left", padx=5, pady=(0,1))
+
         field_type_var = tk.StringVar(value="Text")
         field_types = ["Text", "Number", "Date", "E-mail", "Address", "Phone Number"]
         field_type_dropdown = ctk.CTkOptionMenu(master=zone_type_frame, variable=field_type_var, values=field_types)
         field_type_dropdown.set(field_types[0])
         field_type_dropdown.pack(side="left", padx=5)
-        canvas_width, canvas_height = self.canvas.winfo_width(), self.canvas.winfo_height()
 
-        rect_id = self.canvas.create_rectangle(*coordinates, outline=color, width=2)
+        # separator = ttk.Separator(zone_info_frame, orient='horizontal')
+        # separator.pack(fill='x', expand=True, pady=(10,0))
+
+
+        canvas_width, canvas_height = self.canvas.winfo_width(), self.canvas.winfo_height()
+        rect_id = self.canvas.create_rectangle(*coordinates, outline=color, fill='', width=2)
         label_x = coordinates[0] - 0  # X coordinate for the label (10 pixels to the left of the rectangle's left edge)
         label_y = coordinates[1] - 18  # Y coordinate for the label (10 pixels above the rectangle's top edge)
         
@@ -1029,7 +1159,7 @@ class ZonalOCRApplication(tk.Tk):
 
         label_id = self.canvas.create_text(label_x, label_y, text=zone_name, fill=color, anchor='nw')
         zone = {
-            'frame': frame,
+            'frame': zone_info_frame,
             'entry': zone_entry,
             'field_type': field_type_var,
             'color': color,
@@ -1047,8 +1177,7 @@ class ZonalOCRApplication(tk.Tk):
         zone['selected'] = False
         self.canvas.tag_bind(rect_id, "<Button-1>", lambda event, z=zone: self.on_zone_click(event, z))
         zone_entry.bind("<KeyRelease>", lambda event, z=zone: self.update_zone_label(z, event))
-        for widget in [zone_entry, ocr_output_text, delete_btn, color_indicator, top_frame, field_type_dropdown, zone_type_label, zone_label, zone_name_frame, frame, zone_type_frame]:
-            widget.bind("<MouseWheel>", self.scroll_zone_canvas)
+
 
 
     def on_zone_click(self, event, zone):
@@ -1125,7 +1254,7 @@ class ZonalOCRApplication(tk.Tk):
         target_directory = os.path.join("ocr_results", base_name)
         for page_num, results in ocr_results.items():
             print('page num::', page_num)
-            json_filename = f"{base_name}_page_{page_num}.json"  # 'example-invoice_page_1.json'
+            json_filename = f"{base_name}_page_{page_num}.json"
             json_path = os.path.join(target_directory, json_filename)
             with open(json_path, 'w') as outfile:
                 json.dump(results, outfile, indent=4)
@@ -1136,17 +1265,25 @@ class ZonalOCRApplication(tk.Tk):
             detailed_ocr_results = []
             for line in ocr_result:
                 for element in line:
-                    bbox, text, confidence = element[0], element[1][0], element[1][1]
+                    original_bbox, text, confidence = element[0], element[1][0], element[1][1]
+                    converted_bbox = self.convert_bbox_format(original_bbox)
                     detailed_ocr_results.append({
                         'text': text,
-                        'bbox': bbox,
-                        'confidence': confidence
+                        'bbox': converted_bbox,
                     })
             return detailed_ocr_results
         except Exception as e:
             print(f"Error during PaddleOCR Image processing: {e}")
-            return 
-        
+            return []
+
+    def convert_bbox_format(self, bbox):
+        x_coordinates = [point[0] for point in bbox]
+        y_coordinates = [point[1] for point in bbox]
+        x_min = min(x_coordinates)
+        y_min = min(y_coordinates)
+        x_max = max(x_coordinates)
+        y_max = max(y_coordinates)
+        return [x_min, y_min, x_max, y_max]
 
     def perform_google_vision_on_coordinates(self, coordinates):
         if not self.google_vision_client:
@@ -1173,7 +1310,7 @@ class ZonalOCRApplication(tk.Tk):
 
 class Tooltip(tk.Toplevel):
     def __init__(self, parent, zone_info, on_save, on_delete, existing_zone_names):
-        super().__init__(parent, bg="#EEEEEE")
+        super().__init__(parent, bg="#f0f0f0", borderwidth=1, relief="solid")
         self.wm_overrideredirect(True)
         self.zone_info = zone_info
         self.on_save = on_save
@@ -1182,23 +1319,31 @@ class Tooltip(tk.Toplevel):
         self.init_ui()
 
     def init_ui(self):
-        # ocr_text_label = tk.Label(self, text=self.zone_info['ocr_output_text'], bg="#EEEEEE")
-        ocr_text_label = ctk.CTkLabel(self, text="This is a test.", fg_color="#EEEEEE")
-        ocr_text_label.pack(padx=10, pady=10)
+        # OCR Text Label
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(padx=10, pady=10, fill='both', expand=True)
+        ocr_text_title_label = ctk.CTkLabel(main_frame, text="Output")
+        ocr_text_title_label.pack(padx=5, pady=(0, 0))
+        separator = ttk.Separator(main_frame, orient='horizontal')
+        separator.pack(fill='x', expand=True)
+        ocr_text_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        ocr_text_frame.pack(padx=5, pady=5, fill='both', expand=True)
+        ocr_text_content = ctk.CTkTextbox(master=ocr_text_frame, fg_color="white", activate_scrollbars=False, wrap="word")
+        ocr_text_content.insert("0.0", "Some example text!\n")
+        ocr_text_content.pack(padx=0, pady=0, fill='both', expand=True)
 
-        self.label_var = tk.StringVar()
-        label_dropdown = ttk.OptionMenu(self, self.label_var, "", *self.existing_zone_names)
-        label_dropdown.pack(padx=5, pady=5)
+        self.label_var = tk.StringVar(value="Label")
+        label_dropdown = ctk.CTkOptionMenu(master=self, variable=self.label_var, values=self.existing_zone_names)
+        label_dropdown.pack(padx=10, pady=5)
 
-        btn_frame = tk.Frame(self, bg="#EEEEEE")
-        btn_frame.pack()
+        btn_frame = tk.Frame(self, bg="#f0f0f0")
+        btn_frame.pack(pady=5, fill='x')
 
-        delete_btn = ctk.CTkButton(btn_frame, text="Delete", command=self.delete_zone)
-        delete_btn.bind("<Button-1>", self.delete_zone)
-        delete_btn.pack(side=tk.LEFT, padx=10, pady=5)
+        delete_btn = ctk.CTkButton(btn_frame, text="Delete", command=self.delete_zone, width=100, fg_color="maroon")
+        delete_btn.pack(side=tk.LEFT, padx=10, pady=10, expand=True)
 
-        save_btn = ctk.CTkButton(btn_frame, text="Save", command=self.save_zone)
-        save_btn.pack(side=tk.LEFT, padx=10, pady=5)
+        save_btn = ctk.CTkButton(btn_frame, text="Save", command=self.save_zone, width=100)
+        save_btn.pack(side=tk.LEFT, padx=10, pady=10, expand=True)
 
     def show_tooltip(self, canvas, x, y, width, height):
         abs_x = canvas.winfo_rootx() + x
@@ -1229,5 +1374,5 @@ class Tooltip(tk.Toplevel):
 
 
 if __name__ == "__main__":
-    app = ZonalOCRApplication()
+    app = KeyValueModelBuilder()
     app.mainloop()

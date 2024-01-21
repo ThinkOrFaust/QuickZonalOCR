@@ -3,5 +3,5 @@
 /venv
 /ocr_results
 /document_database.json
-/README.md
-.README.md
+/document_database.sqlite
+/create_control_frame_removed.py
