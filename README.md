@@ -3,7 +3,7 @@
 
 Here is a look at the application's graphical user interface:
 
-![GUI Screenshot](static/ZonalOCR-Example.PNG)
+![GUI Screenshot](static/ZonalOCR-Example-2.PNG)
 
 
 ## Description

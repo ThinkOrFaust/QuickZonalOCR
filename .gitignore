@@ -6,3 +6,6 @@
 /document_database.sqlite
 /create_control_frame_removed.py
 /tesseract_bin
+/Credentials
+/favicon
+/gui_2.py
