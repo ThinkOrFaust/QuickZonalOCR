@@ -944,8 +944,6 @@ class KeyValueModelBuilder(tk.Tk):
             ctk.CTkLabel(self.user_config_window, text="Google Vision API Key").grid(row=7, column=0, padx=10, pady=(20, 0), sticky="w")
             ctk.CTkEntry(self.user_config_window, textvariable=self.google_api_key_var).grid(row=7, column=1, padx=10, pady=(20, 0), sticky="w")
 
-
-            #AIzaSyDQ_l6fX15_QpXLTZYOwz3-oS08i4klUg4
             
             # Submit Config Changes
             ctk.CTkLabel(self.user_config_window, text="").grid(row=8, column=0)
